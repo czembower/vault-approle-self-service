@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/skratchdot/open-golang/open"
@@ -70,9 +72,33 @@ type authObject struct {
 	AppRoleMount   string `json:"app_role_mount"`
 	AppRoleName    string `json:"app_role_name"`
 	AppRoleTTL     string `json:"app_role_ttl"`
+	WrapSecretId   bool   `json:"wrap_secret_id"`
 }
 
 type SecretIDResponse struct {
+	RequestID     string `json:"request_id"`
+	LeaseID       string `json:"lease_id"`
+	Renewable     bool   `json:"renewable"`
+	LeaseDuration int    `json:"lease_duration"`
+	Data          struct {
+		SecretID         string `json:"secret_id"`
+		SecretIDAccessor string `json:"secret_id_accessor"`
+		SecretIDNumUses  int    `json:"secret_id_num_uses"`
+		SecretIDTTL      int    `json:"secret_id_ttl"`
+	} `json:"data"`
+	WrapInfo struct {
+		Accessor         string `json:"accessor"`
+		Creation_Path    string `json:"creation_path"`
+		Creation_Time    string `json:"creation_time"`
+		Token            string `json:"token"`
+		TTL              int    `json:"ttl"`
+		Wrapped_Accessor string `json:"wrapped_accessor"`
+	} `json:"wrap_info"`
+	Warnings any `json:"warnings"`
+	Auth     any `json:"auth"`
+}
+
+type UnwrapSecret struct {
 	RequestID     string `json:"request_id"`
 	LeaseID       string `json:"lease_id"`
 	Renewable     bool   `json:"renewable"`
@@ -89,71 +115,80 @@ type SecretIDResponse struct {
 }
 
 func main() {
+	dec := 1
+	fmt.Println("[1] Generate new AppRole Secret ID")
+	fmt.Println("[2] Unwrap Secret ID from token")
+	fmt.Print("Make a selection [1]: ")
+	fmt.Scanln(&dec)
 
-	var vaultAddr string
-	fmt.Print("Vault Address [https://vault-test.cso.att.com:8200]: ")
-	fmt.Scanln(&vaultAddr)
-	if vaultAddr == "" {
-		vaultAddr = "https://vault-test.cso.att.com:8200"
+	var authData authObject
+
+	fmt.Print("Vault Address [https://127.0.0.1:8200]: ")
+	fmt.Scanln(&authData.Addr)
+	if authData.Addr == "" {
+		authData.Addr = "https://127.0.0.1:8200"
 	}
-
-	var vaultNamespace string
-	fmt.Print("Vault Namespace [5GMobility]: ")
-	fmt.Scanln(&vaultNamespace)
-	if vaultNamespace == "" {
-		vaultNamespace = "5GMobility"
-	}
-
-	var oidcMountName string
-	fmt.Print("OIDC Auth Method Name [oidc]: ")
-	fmt.Scanln(&oidcMountName)
-	if oidcMountName == "" {
-		oidcMountName = "oidc"
-	}
-
-	var appRoleMount string
-	fmt.Print("App Role Mount Path [5g/approle]: ")
-	fmt.Scanln(&appRoleMount)
-	if appRoleMount == "" {
-		appRoleMount = "5g/approle"
-	}
-
-	var appRoleName string
-	fmt.Print("App Role Mount Path [auth.demo.role]: ")
-	fmt.Scanln(&appRoleName)
-	if appRoleName == "" {
-		appRoleName = "auth.demo.role"
-	}
-
-	var appRoleTTL string
-	fmt.Print("App Role Mount Path [30s]: ")
-	fmt.Scanln(&appRoleTTL)
-	if appRoleTTL == "" {
-		appRoleTTL = "30s"
-	}
-
-	oidcAuthMethodPath := fmt.Sprintf("auth/%s/oidc", oidcMountName)
 
 	// parse vault URL scheme to determine TLS settings
-	insecure := false
-	parsedVaultAddr, err := url.Parse(vaultAddr)
+	authData.Insecure = false
+	parsedVaultAddr, err := url.Parse(authData.Addr)
 	if parsedVaultAddr.Scheme == "http" {
-		insecure = true
+		authData.Insecure = true
 		fmt.Println("using insecure transport!")
 	}
 
-	var authData authObject
-	authData.Addr = vaultAddr
-	authData.Namespace = vaultNamespace
-	authData.OidcMountName = oidcMountName
-	authData.Role = "default_role"
-	authData.Insecure = insecure
+	if dec == 2 {
+		fmt.Print("Wrapping Token: ")
+		fmt.Scanln(&authData.Token)
+		if authData.Token == "" {
+			log.Fatal("error: You must enter a valid wrapping token")
+		}
+		authData.unwrapSecret()
+	}
+
+	var vaultNamespace string
+	fmt.Print("Vault Namespace [root]: ")
+	fmt.Scanln(&vaultNamespace)
+	if vaultNamespace == "" {
+		authData.Namespace = "root"
+	}
+
+	fmt.Print("OIDC Auth Method Name [oidc]: ")
+	fmt.Scanln(&authData.OidcMountName)
+	if authData.OidcMountName == "" {
+		authData.OidcMountName = "oidc"
+	}
+
+	fmt.Print("App Role Mount Path [approle]: ")
+	fmt.Scanln(&authData.AppRoleMount)
+	if authData.AppRoleMount == "" {
+		authData.AppRoleMount = "approle"
+	}
+
+	fmt.Print("Vault Role [my-role]: ")
+	fmt.Scanln(&authData.AppRoleName)
+	if authData.AppRoleName == "" {
+		authData.AppRoleName = "my-role"
+	}
+
+	fmt.Print("App Role Secret ID TTL [24h]: ")
+	fmt.Scanln(&authData.AppRoleTTL)
+	if authData.AppRoleTTL == "" {
+		authData.AppRoleTTL = "24h"
+	}
+
+	var wrapSecretIdString string
+	fmt.Print("Wrap Secret ID? [true]: ")
+	fmt.Scanln(&wrapSecretIdString)
+	if wrapSecretIdString == "" {
+		wrapSecretIdString = "true"
+	}
+	authData.WrapSecretId, _ = strconv.ParseBool(wrapSecretIdString)
+
+	oidcAuthMethodPath := fmt.Sprintf("auth/%s/oidc", authData.OidcMountName)
 	authData.RedirectURI = "http://localhost:8250/oidc/callback"
 	authData.CallbackPath = fmt.Sprintf("%s/callback", oidcAuthMethodPath)
 	authData.AuthUrlReqPath = fmt.Sprintf("%s/auth_url", oidcAuthMethodPath)
-	authData.AppRoleMount = appRoleMount
-	authData.AppRoleName = appRoleName
-	authData.AppRoleTTL = appRoleTTL
 
 	authData.getVaultAuthUrl()
 
@@ -186,14 +221,41 @@ func main() {
 
 		authData.getVaultToken()
 
-		// return an indication of success to the caller
-		io.WriteString(w, `
+		loginSuccess := fmt.Sprintf(`
 		<html>
 			<body>
-				<h1>Login successful!</h1>
-				<h2>You can close this window and return to the CLI.</h2>
+				<center>
+				<br><br><br>
+				<table width=200 border=0>
+				<tr>
+				<td width=50></td>
+				<td align=center width=100>
+				<img src="https://www.datocms-assets.com/2885/1620159869-brandvaultprimaryattributedcolor.svg" />
+				</td>
+				<td>
+				<img height=25 src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Eo_circle_green_checkmark.svg/2048px-Eo_circle_green_checkmark.svg.png" />
+				</td>
+				</tr>
+				<tr>
+				<td width=50></td>
+				<td colspan=2>
+				<h2>Login successful</h2>
+				<h3>You can close this window and return to the CLI.</h3>
+				</td>
+				</tr>
+				<tr height=600>
+				<td colspan=3>
+				<font size="2">
+				Authorization: %s
+				</font>
+				</td>
+				</tr>
+				</center>
 			</body>
-		</html>`)
+		</html>`, authData.RemoteCode)
+
+		// return an indication of success to the caller
+		io.WriteString(w, loginSuccess)
 
 		fmt.Println("Successfully logged into Vault via OIDC.")
 
@@ -299,10 +361,8 @@ func (a *authObject) getVaultToken() {
 }
 
 func (a *authObject) getSecretId() {
-	// POST: /auth/approle/role/:role_name/secret-id
 	payload := map[string]string{
-		"role": a.AppRoleName,
-		"ttl":  a.AppRoleTTL,
+		"ttl": a.AppRoleTTL,
 	}
 
 	json_data, err := json.Marshal(payload)
@@ -322,6 +382,10 @@ func (a *authObject) getSecretId() {
 	}
 	req.Header.Add("X-VAULT-TOKEN", a.Token)
 
+	if a.WrapSecretId {
+		req.Header.Add("X-Vault-Wrap-TTL", "24h")
+	}
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Fatalf("error retrieving secret ID from Vault: %v\n", err)
@@ -330,5 +394,41 @@ func (a *authObject) getSecretId() {
 	var result SecretIDResponse
 	err = json.NewDecoder(resp.Body).Decode(&result)
 
-	fmt.Printf("New Secret ID for AppRole %s: %s (TTL: %v)\n", a.AppRoleName, result.Data.SecretID, result.Data.SecretIDTTL)
+	if a.WrapSecretId {
+		fmt.Printf("New wrapping token for %s Secret ID: %s (Wrapped Secret ID validity period: %d hours)\n", a.AppRoleName, result.WrapInfo.Token, result.WrapInfo.TTL/60/60)
+	} else {
+		fmt.Printf("New Secret ID for AppRole %s: %s (TTL: %v)\n", a.AppRoleName, result.Data.SecretID, result.Data.SecretIDTTL)
+	}
+}
+
+func (a *authObject) unwrapSecret() {
+	httpClient := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: a.Insecure}
+
+	req, err := http.NewRequest("POST", a.Addr+"/v1/sys/wrapping/unwrap", nil)
+	if a.Namespace != "" {
+		req.Header.Add("X-VAULT-NAMESPACE", a.Namespace)
+	}
+	req.Header.Add("X-VAULT-TOKEN", a.Token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Fatalf("error retrieving unwrapped secret: %v\n", err)
+	}
+
+	var result UnwrapSecret
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err != nil {
+		log.Fatalf("error unmarshalling Vault response: %v\n", err)
+	}
+
+	if len(result.Data.SecretID) != 36 {
+		log.Println("An error has occurred. Please make sure you have entered a valid response-wrapped secret.")
+	}
+
+	fmt.Printf("Secret ID: %s\n", result.Data.SecretID)
+
+	os.Exit(0)
 }
