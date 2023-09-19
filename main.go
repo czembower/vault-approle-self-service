@@ -146,10 +146,9 @@ func main() {
 		authData.unwrapSecret()
 	}
 
-	var vaultNamespace string
 	fmt.Print("Vault Namespace [root]: ")
-	fmt.Scanln(&vaultNamespace)
-	if vaultNamespace == "" {
+	fmt.Scanln(&authData.Namespace)
+	if authData.Namespace == "" {
 		authData.Namespace = "root"
 	}
 
